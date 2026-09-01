@@ -11,7 +11,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
-import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -34,8 +33,8 @@ import java.io.IOException;
 public class JwtAuthorizationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
-//    private final UserDetailsService userDetailsService;
-private final UserAuthenticationProvider userAuthenticationProvider;
+
+    private final UserAuthenticationProvider userAuthenticationProvider;
 
 
     @Override
@@ -45,14 +44,15 @@ private final UserAuthenticationProvider userAuthenticationProvider;
 
         String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
 
-        // No token -> let Spring Security decide whether
+        // No bearer token -> let Spring Security decide whether
         // the endpoint requires authentication.
-        if (authHeader == null || authHeader.isBlank()) {
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        if (!authHeader.startsWith("Bearer ")) {
+        // Already authenticated earlier in the chain.
+        if (SecurityContextHolder.getContext().getAuthentication() != null) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -63,15 +63,7 @@ private final UserAuthenticationProvider userAuthenticationProvider;
 
             String username = jwtService.extractUsername(jwt);
 
-            if (username == null || SecurityContextHolder.getContext().getAuthentication() != null) {
-
-                filterChain.doFilter(request, response);
-                return;
-            }
-
-            boolean valid = jwtService.isTokenValid(jwt, username);
-
-            if (!valid) {
+            if (username == null || !jwtService.isTokenValid(jwt, username)) {
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 return;
             }
@@ -86,20 +78,21 @@ private final UserAuthenticationProvider userAuthenticationProvider;
                     );
 
             authentication.setDetails(new WebAuthenticationDetailsSource()
-                    .buildDetails(request)
+                            .buildDetails(request)
             );
 
             SecurityContextHolder.getContext().setAuthentication(authentication);
-
-            filterChain.doFilter(request, response);
 
         } catch (Exception e) {
 
             log.error("JWT authentication failed", e);
 
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED
-            );
+            SecurityContextHolder.clearContext();
+
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            return;
         }
 
+        filterChain.doFilter(request, response);
     }
 }
