@@ -14,7 +14,7 @@ import java.lang.annotation.Target;
 @Import(FullSpringSecurityImportSelector.class)
 public @interface FullSpringSecurity {
 
-    SecurityType type() default SecurityType.CLIENT;
+    SecurityType type();
 
     //SecurityType type() default SecurityType.SERVICE;
 }
