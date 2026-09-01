@@ -84,6 +84,14 @@ public class JwtService {
 
             String publicKey = properties.getClient().getPublicKey();
 
+            if (publicKey == null || publicKey.isBlank()) {
+                throw new IllegalStateException(
+                        "full-security.client.public-key is not set. Provide the "
+                        + "Base64-encoded X.509 RSA public key used to verify "
+                        + "incoming JWTs, for example:\n\n"
+                        + "  full-security.client.public-key=${JWT_PUBLIC_KEY}\n");
+            }
+
             byte[] keyBytes = Base64.getDecoder().decode(publicKey);
 
             X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
@@ -91,6 +99,9 @@ public class JwtService {
             KeyFactory keyFactory = KeyFactory.getInstance("RSA");
 
             return keyFactory.generatePublic(spec);
+
+        } catch (IllegalStateException e) {
+            throw e;
 
         } catch (Exception e) {
             throw new IllegalStateException("Unable to load JWT public key", e
