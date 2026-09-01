@@ -3,14 +3,12 @@ package com.korede.full_spring_security.config;
 import com.korede.full_spring_security.security.JwtAuthorizationFilter;
 import com.korede.full_spring_security.security.JwtService;
 import com.korede.full_spring_security.security.UserAuthenticationProvider;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
@@ -27,15 +25,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  */
 
 @Slf4j
-@RequiredArgsConstructor
-@ConditionalOnBean(UserAuthenticationProvider.class)
 @EnableConfigurationProperties(FullSecurityProperties.class)
 public class ClientSecurityConfiguration {
-
-   // private final FullSecurityProperties properties;
-   //private final JwtService jwtService;
-
-    private final UserAuthenticationProvider userAuthenticationProvider;
 
     @Bean
     public JwtService jwtService(FullSecurityProperties properties) {
@@ -44,11 +35,26 @@ public class ClientSecurityConfiguration {
     }
 
     @Bean
-    SecurityFilterChain serviceSecurityFilterChain(
+    SecurityFilterChain clientSecurityFilterChain(
             HttpSecurity http, JwtService jwtService,
-            FullSecurityProperties properties) throws Exception {
+            FullSecurityProperties properties,
+            ObjectProvider<UserAuthenticationProvider> providers) throws Exception {
 
         log.info("PUBLIC ENDPOINTS: {}", properties.getPublicEndpoints());
+
+        UserAuthenticationProvider userAuthenticationProvider =
+                providers.getIfAvailable();
+
+        if (userAuthenticationProvider == null) {
+            throw new IllegalStateException(
+                    "@FullSpringSecurity(type = CLIENT) requires a "
+                    + UserAuthenticationProvider.class.getName() + " bean. "
+                    + "Expose one, for example:\n\n"
+                    + "  @Service\n"
+                    + "  public class LoadUser implements UserAuthenticationProvider {\n"
+                    + "      public UserDetails loadUser(String username) { ... }\n"
+                    + "  }\n");
+        }
 
         JwtAuthorizationFilter jwtAuthorizationFilter = new JwtAuthorizationFilter(
                         jwtService, userAuthenticationProvider);
