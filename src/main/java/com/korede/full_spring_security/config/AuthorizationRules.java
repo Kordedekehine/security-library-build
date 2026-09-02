@@ -1,5 +1,6 @@
 package com.korede.full_spring_security.config;
 
+import jakarta.servlet.DispatcherType;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AuthorizeHttpRequestsConfigurer;
@@ -10,6 +11,7 @@ import java.util.List;
  * Applies full-security.* authorization in a fixed order, shared by both
  * chains so CLIENT and SERVICE cannot drift apart:
  *
+ *   0. ERROR/FORWARD/ASYNC     permitAll (container dispatches)
  *   1. public-endpoints        permitAll
  *   2. swagger paths           permitAll  (when enabled)
  *   3. actuator public ids     permitAll
@@ -29,6 +31,20 @@ final class AuthorizationRules {
 
     static void apply(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
             FullSecurityProperties properties) {
+
+        // Validate the whole config before registering anything, so a bad
+        // rule fails the context instead of half-building a filter chain.
+        properties.getRules().forEach(AuthorizationRules::validate);
+
+        // Container-initiated dispatches, not client requests. Without this a
+        // 404 or 500 is forwarded to /error, which matches no rule and falls
+        // through to anyRequest().authenticated() - so every error in the app
+        // comes back as 401 and the real status is lost.
+        auth.dispatcherTypeMatchers(
+                        DispatcherType.ERROR,
+                        DispatcherType.FORWARD,
+                        DispatcherType.ASYNC)
+                .permitAll();
 
         properties.getPublicEndpoints()
                 .forEach(endpoint -> auth.requestMatchers(endpoint).permitAll());
@@ -56,8 +72,6 @@ final class AuthorizationRules {
 
     private static void applyRule(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
             FullSecurityProperties.Rule rule) {
-
-        validate(rule);
 
         if (rule.getMethods().isEmpty()) {
 
