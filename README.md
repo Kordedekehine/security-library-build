@@ -4,8 +4,8 @@ Stateless JWT security for a Spring Boot service in one annotation.
 
 ```java
 @SpringBootApplication
-@FullSpringSecurity(type = SecurityType.CLIENT)
-public class BoilerplateApplication { }
+@FullSpringSecurity
+public class OrdersApplication { }
 ```
 
 That gives you a stateless filter chain that verifies RS256 bearer tokens
@@ -65,6 +65,11 @@ expired is rejected with 401 even when its token verifies.
 
 If no `UserAuthenticationProvider` bean exists, the context fails at startup
 with a message naming the interface — it does not silently start unsecured.
+
+A caller that has no local record — another service, say — can return a
+minimal `UserDetails` built from the subject. The token's role claim is what
+grants authority; `loadUser` only establishes that the subject is known and
+in good standing.
 
 ---
 
@@ -225,100 +230,33 @@ argument or ownership checks. Both are enforced; the path rule runs first.
 
 ---
 
-## Service-to-service calls
+## Calls from other services
 
-`SERVICE` mode is for a service called by other services. It does **not** issue
-tokens. A caller exchanges its credentials at your auth service, gets a JWT
-carrying its roles, and presents that here — this service verifies the token
-and checks it carries the role that opens it.
-
-```
-  calling service ──credentials──> your auth service
-                  <────JWT────────
-                  ──Bearer JWT───> this service   (verify + check role)
-```
-
-```java
-@SpringBootApplication
-@FullSpringSecurity(type = SecurityType.SERVICE)
-public class ReportingApplication { }
-```
+There is no separate mode for this. A calling service obtains a JWT from your
+auth service and presents it exactly like a user would; this service verifies
+it and gates on the role it carries.
 
 ```properties
-# Same verification settings as CLIENT
 full-security.client.jwks-uri=https://auth-service/.well-known/jwks.json
 full-security.client.issuer=auth-service
-full-security.client.role-claim=role
 
-# The role that opens this service
-full-security.service.required-roles=REPORTING
+full-security.rules[0].pattern=/internal/**
+full-security.rules[0].roles=REPORTING
 ```
 
-Every service declares its own role, so a token minted for one service does
-not open another. `required-roles` accepts several — any one is enough. Leave
-it empty and any verified token is accepted.
+Give each service its own role and gate on it, so a token minted for one does
+not open another.
 
-### Where it applies
+Your `UserAuthenticationProvider` will be asked to resolve the calling
+service's subject. When there is no local record for it, return a minimal
+`UserDetails` — the token's role claim is what grants authority:
 
-`required-roles` is the gate for anything **no rule matched**. Ordered rules
-still take precedence, so a specific endpoint can demand more:
-
-```properties
-full-security.service.required-roles=REPORTING
-
-full-security.rules[0].pattern=/internal/admin/**
-full-security.rules[0].roles=REPORTING_ADMIN
+```java
+@Override
+public UserDetails loadUser(String username) {
+    return User.withUsername(username).password("").authorities(List.of()).build();
+}
 ```
-
-| Request | Result |
-|---|---|
-| No token | 401 |
-| Token without `REPORTING` | 403 |
-| Token with `REPORTING`, any normal endpoint | allowed |
-| Token with `REPORTING` on `/internal/admin/**` | 403 — that rule needs more |
-| A public endpoint, no token | allowed |
-
-### No `UserAuthenticationProvider` needed
-
-There is no local user record for another service, so the token's subject
-becomes the principal directly and account-state checks do not apply.
-`Authentication.getName()` returns the calling service's subject, and
-authorities come from the token's role claim and nothing else — a token with
-no role grants nothing, because there is no local record to fall back on.
-
-That is the only real difference from `CLIENT`. Verification is the same code:
-JWKS, issuer, audience, clock skew and algorithms all behave identically.
-
-### Choosing a mode
-
-| | `CLIENT` | `SERVICE` |
-|---|---|---|
-| Caller | An end user | Another service |
-| Identity | Token `sub` resolved to a local user | Token `sub` |
-| Needs `UserAuthenticationProvider` | Yes | No |
-| Account state checked | Yes | Not applicable |
-| Gate | `rules` + `@PreAuthorize` | `required-roles` + `rules` |
-
-### Callers that cannot obtain a token
-
-For a caller with no route to your auth service — a legacy job, a probe — a
-static shared key is also accepted:
-
-```properties
-full-security.service.callers[0].id=legacy-batch
-full-security.service.callers[0].key=${LEGACY_BATCH_KEY}
-full-security.service.callers[0].keys[0]=${LEGACY_BATCH_KEY_NEW}
-full-security.service.callers[0].roles=REPORTING
-```
-
-Only active when `callers` is configured. Keys are compared with
-`MessageDigest.isEqual` without an early exit, so timing reveals neither the
-match nor how many callers exist. Listing a second key lets you rotate
-without a synchronised cutover: add the new key, move the caller, drop the
-old one.
-
-Prefer real tokens. A shared key is a bearer credential that never expires
-and identifies no one.
 
 ### What this does not protect
 
@@ -397,12 +335,6 @@ default.
 | `full-security.actuator.public-endpoints` | empty | Open actuator ids |
 | `full-security.actuator.roles` | empty | Roles for the rest of `/actuator/**` |
 | `full-security.cors.*` | disabled | See CORS above |
-| `full-security.service.required-roles` | empty | Role gating this service. Empty accepts any verified token |
-| `full-security.service.header` | `X-API-Key` | Header carrying the caller's key |
-| `full-security.service.callers[n].id` | — | Calling service name; becomes the principal |
-| `full-security.service.callers[n].key` | — | Shared secret. Supply from the environment |
-| `full-security.service.callers[n].keys` | empty | Additional accepted secrets, for rotation |
-| `full-security.service.callers[n].roles` | empty | Roles granted to that caller |
 
 Every optional surface defaults closed. Opting in is always explicit.
 
