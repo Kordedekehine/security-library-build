@@ -269,6 +269,54 @@ public UserDetails loadUser(String username) {
 
 ---
 
+## Extending the chain
+
+Two hooks cover what properties cannot.
+
+### Anything the properties do not expose
+
+`FullSecurityCustomizer` beans are applied to the chain after the library has
+configured it and before it is built, so they can add to it or override it:
+
+```java
+@Bean
+FullSecurityCustomizer strictHeaders() {
+    return http -> http.headers(headers -> headers
+            .httpStrictTransportSecurity(hsts -> hsts.maxAgeInSeconds(31_536_000))
+            .referrerPolicy(referrer -> referrer.policy(SAME_ORIGIN)));
+}
+```
+
+Use it for security headers, re-enabling CSRF, registering another filter, or
+anything else the DSL supports. Customizers run in `Ordered` order, lowest
+first, and each is logged at startup.
+
+> Because they run last, a customizer can undo what the library set —
+> including disabling authentication. Review them as you would review the
+> chain itself.
+
+### Revoking a token before it expires
+
+A JWT cannot be withdrawn. Without a check, a leaked token stays usable for
+its whole lifetime and a logout cannot take effect. `TokenRevocationChecker`
+beans are consulted on every request:
+
+```java
+@Bean
+TokenRevocationChecker denylist(RevokedTokenRepository repository) {
+    return claims -> repository.existsByJti(claims.id());
+}
+```
+
+Checks run after signature verification and **before** the user lookup, so a
+revoked token costs no database round trip. Any registered checker can
+reject. Keep them fast — cache rather than query per request.
+
+A checker that throws is treated as a rejection, so an unreachable denylist
+fails closed rather than becoming a way to use revoked tokens.
+
+---
+
 ## Error responses
 
 | Situation | Status |
@@ -398,13 +446,20 @@ either spelling.
 Know these before adopting:
 
 - **Pre-1.0.** The API may still change before 1.0.
+- **One filter chain.** No `securityMatcher` scoping, so different paths cannot
+  use different *authentication* mechanisms. Authorization does vary by path.
+- **CSRF is disabled** and sessions are stateless. Both are right for a token
+  API and wrong the moment you add cookies — re-enable CSRF with a customizer.
+- **One issuer and one audience.** No multi-tenant issuer resolution.
+- **Roles, not scopes.** No OAuth2 `scope` handling or token introspection.
+- **No mTLS / X.509** client certificate authentication.
+- **Authentication failures log at debug**, so there is no audit event to ship
+  to a SIEM without adding one.
 - **The role claim must be top-level.** Keycloak-style nesting
   (`realm_access.roles`) is not read — flatten it at issue time.
 - **HMAC / shared-secret JWTs are not supported**, deliberately: with a
   symmetric key every verifying service can also mint tokens. Use asymmetric
   keys for user tokens, and the service-key mechanism above for machines.
-- **One issuer and one audience** per service. Multiple accepted issuers are
-  not supported.
 - **JWKS is fetched over plain HTTP if you configure an `http://` URL.** Use
   `https` anywhere real.
 - **Servlet traffic only.** gRPC, or anything on a non-servlet port, bypasses
