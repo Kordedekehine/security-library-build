@@ -16,9 +16,9 @@ The library **verifies** tokens. It never signs them — issuing is your auth
 service's job.
 
 > **Status: pre-1.0.** The `full-security.*` property names and the
-> `UserAuthenticationProvider` SPI are stable in practice, but `JwtService`
-> exposes jjwt's `Claims` type, so a jjwt major upgrade is a breaking change.
-> See [Limitations](#limitations) before adopting.
+> `UserAuthenticationProvider` SPI are stable in practice. The public API no
+> longer exposes any JWT-library type, so upgrading jjwt underneath is not a
+> breaking change for you. See [Limitations](#limitations) before adopting.
 
 ---
 
@@ -26,9 +26,9 @@ service's job.
 
 ```xml
 <dependency>
-    <groupId>com.korede</groupId>
+    <groupId>io.github.kordedekehine</groupId>
     <artifactId>full-spring-security</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.1.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -75,17 +75,47 @@ full-security.client.public-key=${JWT_PUBLIC_KEY}
 full-security.public-endpoints=/public/**
 ```
 
-`public-key` is the Base64 of a **DER X.509 RSA public key** — not a PEM file,
-no `-----BEGIN-----` armour, no newlines:
+In deployed environments set `FULL_SECURITY_CLIENT_PUBLIC_KEY` instead of a
+placeholder — Spring's relaxed binding maps it onto the property directly.
+
+---
+
+## Where verification keys come from
+
+Two sources. `jwks-uri` wins when both are set.
+
+### A JWKS endpoint — preferred
+
+```properties
+full-security.client.jwks-uri=https://auth-service/.well-known/jwks.json
+```
+
+Keys are selected by the token's `kid` header, so **rotation is picked up
+without a redeploy**. The set is cached (`jwks-cache-ttl`, default 15m); an
+unknown `kid` triggers one refresh, rate limited by `jwks-refresh-cooldown`
+so junk kids can't be used to hammer your issuer through this service. If a
+refresh fails, the cached set keeps serving rather than taking every request
+down.
+
+Tokens must carry a `kid` header for this to work — without one there is
+nothing to select on, and the request is rejected.
+
+### A static public key
+
+```properties
+full-security.client.public-key=${JWT_PUBLIC_KEY}
+```
+
+Base64 of an X.509 public key:
 
 ```bash
 openssl rsa -in private.pem -pubout -outform DER | base64 | tr -d '\n'
 ```
 
-In deployed environments set `FULL_SECURITY_CLIENT_PUBLIC_KEY` instead of a
-placeholder — Spring's relaxed binding maps it onto the property directly.
-
----
+**RSA, EC and EdDSA are all supported** — the algorithm is read from the key
+itself, not assumed. PEM armour and newlines are stripped, so a key pasted
+straight out of a `.pem` file works. Set `key-algorithm` only to skip
+detection.
 
 ## What a token must contain
 
@@ -195,6 +225,54 @@ argument or ownership checks. Both are enforced; the path rule runs first.
 
 ---
 
+## Service-to-service calls
+
+`SERVICE` mode is for machine callers. They present a shared key in a header
+rather than a user token:
+
+```properties
+full-security.service.header=X-API-Key
+
+full-security.service.callers[0].id=orders-service
+full-security.service.callers[0].key=${ORDERS_SERVICE_KEY}
+full-security.service.callers[0].roles=SERVICE,ORDERS
+
+full-security.service.callers[1].id=billing-service
+full-security.service.callers[1].key=${BILLING_SERVICE_KEY}
+full-security.service.callers[1].roles=SERVICE
+```
+
+```java
+@SpringBootApplication
+@FullSpringSecurity(type = SecurityType.SERVICE)
+public class ReportingApplication { }
+```
+
+The caller's `id` becomes the authenticated principal, so `Authentication
+.getName()` tells you which service called, and its roles work with the same
+`rules` and `@PreAuthorize` as anything else.
+
+Keys are compared with a constant-time check, and every configured credential
+is checked rather than stopping at the first match, so response timing does
+not reveal a valid key. A request with no key header passes through untouched
+so public endpoints stay reachable. A caller configured without a key fails
+the context at startup, naming the caller.
+
+**Supply keys from the environment**, never a committed file. They are shared
+secrets: anyone holding one can impersonate that service.
+
+Which mode do you want?
+
+| | `CLIENT` | `SERVICE` |
+|---|---|---|
+| Credential | JWT bearer token | Shared key header |
+| Identity from | Token `sub` + your `loadUser` | Configured caller `id` |
+| Roles from | Token role claim | Configured caller roles |
+| Key rotation | JWKS, no redeploy | Redeploy with new secret |
+| Use for | End users, and machines that already hold a JWT | Internal calls between your own services |
+
+---
+
 ## Error responses
 
 | Situation | Status |
@@ -241,7 +319,12 @@ default.
 | Property | Default | Meaning |
 |---|---|---|
 | `full-security.public-endpoints` | empty | Ant patterns open to everyone |
-| `full-security.client.public-key` | — | Base64 DER X.509 RSA public key. Required for CLIENT |
+| `full-security.client.jwks-uri` | none | JWKS endpoint. Takes precedence over `public-key` |
+| `full-security.client.jwks-cache-ttl` | `15m` | How long a fetched key set is trusted |
+| `full-security.client.jwks-refresh-cooldown` | `30s` | Floor between refreshes on unknown `kid` |
+| `full-security.client.jwks-timeout` | `5s` | Connect timeout for the JWKS endpoint |
+| `full-security.client.public-key` | — | Base64 X.509 public key: RSA, EC or EdDSA |
+| `full-security.client.key-algorithm` | detected | Skip detection: `RSA`, `EC`, `EdDSA` |
 | `full-security.client.issuer` | none | When set, `iss` must match |
 | `full-security.client.audience` | none | When set, `aud` must match |
 | `full-security.client.role-claim` | `role` | Claim carrying the caller's roles |
@@ -256,6 +339,10 @@ default.
 | `full-security.actuator.public-endpoints` | empty | Open actuator ids |
 | `full-security.actuator.roles` | empty | Roles for the rest of `/actuator/**` |
 | `full-security.cors.*` | disabled | See CORS above |
+| `full-security.service.header` | `X-API-Key` | Header carrying the caller's key |
+| `full-security.service.callers[n].id` | — | Calling service name; becomes the principal |
+| `full-security.service.callers[n].key` | — | Shared secret. Supply from the environment |
+| `full-security.service.callers[n].roles` | empty | Roles granted to that caller |
 
 Every optional surface defaults closed. Opting in is always explicit.
 
@@ -318,19 +405,16 @@ either spelling.
 
 Know these before adopting:
 
-- **RSA public keys only.** No EC/ES256, no HMAC/HS256.
-- **No JWKS support.** The key is a static Base64 string, so integrating with
-  Auth0, Keycloak, Cognito, Okta or Entra means extracting the key by hand and
-  redeploying whenever it rotates.
-- **`SERVICE` mode installs no authentication mechanism.** Any rule requiring a
-  role or an authenticated caller can never be satisfied and returns 403
-  forever. It logs a warning at startup. Use `CLIENT` for anything
-  token-authenticated.
-- **`JwtService` exposes jjwt's `Claims`** in its public API.
-- **No IDE autocomplete** for `full-security.*` — the configuration processor
-  is not wired up yet.
-
----
+- **Pre-1.0.** The API may still change before 1.0.
+- **The role claim must be top-level.** Keycloak-style nesting
+  (`realm_access.roles`) is not read — flatten it at issue time.
+- **HMAC / shared-secret JWTs are not supported**, deliberately: with a
+  symmetric key every verifying service can also mint tokens. Use asymmetric
+  keys for user tokens, and the service-key mechanism above for machines.
+- **One issuer and one audience** per service. Multiple accepted issuers are
+  not supported.
+- **JWKS is fetched over plain HTTP if you configure an `http://` URL.** Use
+  `https` anywhere real.
 
 ## Building
 
