@@ -10,36 +10,46 @@ import java.util.List;
 @ConfigurationProperties(prefix = "full-security")
 public class FullSecurityProperties {
 
+    /** Ant patterns permitted without authentication. */
     private List<String> publicEndpoints = new ArrayList<>();
 
     private Client client = new Client();
 
-    public List<String> getPublicEndpoints() {
-        return publicEndpoints;
-    }
+    private Cors cors = new Cors();
 
-    public void setPublicEndpoints(List<String> publicEndpoints) {
-        this.publicEndpoints = publicEndpoints;
-    }
-
-    public Client getClient() {
-        return client;
-    }
-
-    public void setClient(Client client) {
-        this.client = client;
-    }
-
+    @Data
     public static class Client {
 
+        /** Base64-encoded X.509 RSA public key used to verify incoming JWTs. */
         private String publicKey;
 
-        public String getPublicKey() {
-            return publicKey;
-        }
+        /** If set, tokens must carry this "iss" claim. */
+        private String issuer;
 
-        public void setPublicKey(String publicKey) {
-            this.publicKey = publicKey;
-        }
+        /** If set, tokens must carry this "aud" claim. */
+        private String audience;
+
+        /** Tolerance for clock drift between issuer and this service. */
+        private long clockSkewSeconds = 60;
+
+        /** Claim carrying the caller's role(s). String or array. */
+        private String roleClaim = "role";
+    }
+
+    @Data
+    public static class Cors {
+
+        private boolean enabled = false;
+
+        private List<String> allowedOrigins = new ArrayList<>();
+
+        private List<String> allowedMethods =
+                new ArrayList<>(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+
+        private List<String> allowedHeaders = new ArrayList<>(List.of("*"));
+
+        private boolean allowCredentials = false;
+
+        private long maxAgeSeconds = 3600;
     }
 }
