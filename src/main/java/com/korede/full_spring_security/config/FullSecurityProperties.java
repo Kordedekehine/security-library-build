@@ -18,6 +18,8 @@ public class FullSecurityProperties {
 
     private Cors cors = new Cors();
 
+    private Service service = new Service();
+
     /** Ordered role rules, evaluated after public endpoints. First match wins. */
     private List<Rule> rules = new ArrayList<>();
 
@@ -129,6 +131,32 @@ public class FullSecurityProperties {
         private List<String> publicEndpoints = new ArrayList<>();
 
         /** Roles required for every other /actuator/** endpoint. */
+        private List<String> roles = new ArrayList<>();
+    }
+
+    /**
+     * Service-to-service authentication for SERVICE mode: a shared key sent
+     * in a header, mapped to a named caller and its roles.
+     */
+    @Data
+    public static class Service {
+
+        /** Header carrying the shared key. */
+        private String header = "X-API-Key";
+
+        private List<Caller> callers = new ArrayList<>();
+    }
+
+    @Data
+    public static class Caller {
+
+        /** Name of the calling service. Becomes the authenticated principal. */
+        private String id;
+
+        /** Shared secret. Supply from the environment, never in a committed file. */
+        private String key;
+
+        /** Roles granted to this caller. ROLE_ prefix optional. */
         private List<String> roles = new ArrayList<>();
     }
 }
