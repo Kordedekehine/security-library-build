@@ -228,7 +228,13 @@ argument or ownership checks. Both are enforced; the path rule runs first.
 ## Service-to-service calls
 
 `SERVICE` mode is for machine callers. They present a shared key in a header
-rather than a user token:
+instead of a user token.
+
+```java
+@SpringBootApplication
+@FullSpringSecurity(type = SecurityType.SERVICE)
+public class ReportingApplication { }
+```
 
 ```properties
 full-security.service.header=X-API-Key
@@ -242,34 +248,119 @@ full-security.service.callers[1].key=${BILLING_SERVICE_KEY}
 full-security.service.callers[1].roles=SERVICE
 ```
 
-```java
-@SpringBootApplication
-@FullSpringSecurity(type = SecurityType.SERVICE)
-public class ReportingApplication { }
-```
+The caller's `id` becomes the authenticated principal, so
+`Authentication.getName()` tells you which service called, and its roles work
+with the same `rules` and `@PreAuthorize` as anything else.
 
-The caller's `id` becomes the authenticated principal, so `Authentication
-.getName()` tells you which service called, and its roles work with the same
-`rules` and `@PreAuthorize` as anything else.
-
-Keys are compared with a constant-time check, and every configured credential
-is checked rather than stopping at the first match, so response timing does
-not reveal a valid key. A request with no key header passes through untouched
-so public endpoints stay reachable. A caller configured without a key fails
-the context at startup, naming the caller.
-
-**Supply keys from the environment**, never a committed file. They are shared
-secrets: anyone holding one can impersonate that service.
-
-Which mode do you want?
+### Choosing a mode
 
 | | `CLIENT` | `SERVICE` |
 |---|---|---|
 | Credential | JWT bearer token | Shared key header |
 | Identity from | Token `sub` + your `loadUser` | Configured caller `id` |
 | Roles from | Token role claim | Configured caller roles |
-| Key rotation | JWKS, no redeploy | Redeploy with new secret |
-| Use for | End users, and machines that already hold a JWT | Internal calls between your own services |
+| Rotation | JWKS, no redeploy | Overlapping keys, no cutover |
+| Use for | End users, and machines already holding a JWT | Internal calls between your own services |
+
+A service already holding a JWT should use `CLIENT`. Reach for `SERVICE` when
+there is no token to pass — a cron job, a worker, a legacy caller.
+
+### Generating a key
+
+Shared secrets should be long and random. Not a password, not a UUID you
+picked by hand:
+
+```bash
+openssl rand -base64 32
+```
+
+Supply them through the environment. A key in a committed file is a key in
+your git history forever.
+
+### Calling from another service
+
+The calling side just sets a header.
+
+```java
+// Spring 6+ RestClient
+RestClient client = RestClient.builder()
+        .baseUrl("https://reporting-service")
+        .defaultHeader("X-API-Key", System.getenv("REPORTING_KEY"))
+        .build();
+```
+
+```java
+// WebClient
+WebClient client = WebClient.builder()
+        .baseUrl("https://reporting-service")
+        .defaultHeader("X-API-Key", System.getenv("REPORTING_KEY"))
+        .build();
+```
+
+```bash
+curl -H "X-API-Key: $REPORTING_KEY" https://reporting-service/api/v1/reports
+```
+
+### Restricting endpoints per calling service
+
+Give each caller its own role and gate on it, so a compromised key for one
+service does not open every endpoint:
+
+```properties
+full-security.service.callers[0].id=orders-service
+full-security.service.callers[0].key=${ORDERS_SERVICE_KEY}
+full-security.service.callers[0].roles=ORDERS
+
+full-security.service.callers[1].id=billing-service
+full-security.service.callers[1].key=${BILLING_SERVICE_KEY}
+full-security.service.callers[1].roles=BILLING
+
+full-security.rules[0].pattern=/internal/orders/**
+full-security.rules[0].roles=ORDERS
+
+full-security.rules[1].pattern=/internal/billing/**
+full-security.rules[1].roles=BILLING
+```
+
+### Rotating a key without downtime
+
+A caller accepts more than one key, so the two sides never have to cut over
+at the same instant:
+
+```properties
+full-security.service.callers[0].id=orders-service
+full-security.service.callers[0].key=${ORDERS_SERVICE_KEY_OLD}
+full-security.service.callers[0].keys[0]=${ORDERS_SERVICE_KEY_NEW}
+```
+
+1. Add the new key here and deploy — both are accepted.
+2. Move the calling service to the new key and deploy.
+3. Drop the old key here and deploy.
+
+### How keys are compared
+
+Every configured credential is checked with `MessageDigest.isEqual`, and the
+loop does not exit early on a match — so neither the comparison nor the
+number of configured callers is visible in response timing.
+
+A request with **no** key header passes through untouched rather than being
+rejected, so public endpoints stay reachable and the authorization rules
+decide. A caller configured without any key fails the context at startup,
+naming the caller.
+
+### What this does not protect
+
+> **Only servlet traffic.** This is a Spring Security servlet filter, so it
+> covers your HTTP port and nothing else. A gRPC server on its own port —
+> `grpc.server.port`, for example — does not pass through this chain and is
+> reachable by anyone who can open a socket to it, authenticated or not.
+> Protect gRPC with its own interceptor and keep that port off the public
+> network.
+
+Shared keys are bearer credentials: whoever holds one *is* that service.
+They do not expire, they do not identify a human, and they carry no
+audience. Keep them on private networks, rotate them, and prefer `CLIENT`
+with real tokens wherever a token already exists.
 
 ---
 
@@ -342,6 +433,7 @@ default.
 | `full-security.service.header` | `X-API-Key` | Header carrying the caller's key |
 | `full-security.service.callers[n].id` | — | Calling service name; becomes the principal |
 | `full-security.service.callers[n].key` | — | Shared secret. Supply from the environment |
+| `full-security.service.callers[n].keys` | empty | Additional accepted secrets, for rotation |
 | `full-security.service.callers[n].roles` | empty | Roles granted to that caller |
 
 Every optional surface defaults closed. Opting in is always explicit.
@@ -415,6 +507,9 @@ Know these before adopting:
   not supported.
 - **JWKS is fetched over plain HTTP if you configure an `http://` URL.** Use
   `https` anywhere real.
+- **Servlet traffic only.** gRPC, or anything on a non-servlet port, bypasses
+  the filter chain entirely. See
+  [What this does not protect](#what-this-does-not-protect).
 
 ## Building
 
