@@ -227,8 +227,16 @@ argument or ownership checks. Both are enforced; the path rule runs first.
 
 ## Service-to-service calls
 
-`SERVICE` mode is for machine callers. They present a shared key in a header
-instead of a user token.
+`SERVICE` mode is for a service called by other services. It does **not** issue
+tokens. A caller exchanges its credentials at your auth service, gets a JWT
+carrying its roles, and presents that here — this service verifies the token
+and checks it carries the role that opens it.
+
+```
+  calling service ──credentials──> your auth service
+                  <────JWT────────
+                  ──Bearer JWT───> this service   (verify + check role)
+```
 
 ```java
 @SpringBootApplication
@@ -237,116 +245,80 @@ public class ReportingApplication { }
 ```
 
 ```properties
-full-security.service.header=X-API-Key
+# Same verification settings as CLIENT
+full-security.client.jwks-uri=https://auth-service/.well-known/jwks.json
+full-security.client.issuer=auth-service
+full-security.client.role-claim=role
 
-full-security.service.callers[0].id=orders-service
-full-security.service.callers[0].key=${ORDERS_SERVICE_KEY}
-full-security.service.callers[0].roles=SERVICE,ORDERS
-
-full-security.service.callers[1].id=billing-service
-full-security.service.callers[1].key=${BILLING_SERVICE_KEY}
-full-security.service.callers[1].roles=SERVICE
+# The role that opens this service
+full-security.service.required-roles=REPORTING
 ```
 
-The caller's `id` becomes the authenticated principal, so
-`Authentication.getName()` tells you which service called, and its roles work
-with the same `rules` and `@PreAuthorize` as anything else.
+Every service declares its own role, so a token minted for one service does
+not open another. `required-roles` accepts several — any one is enough. Leave
+it empty and any verified token is accepted.
+
+### Where it applies
+
+`required-roles` is the gate for anything **no rule matched**. Ordered rules
+still take precedence, so a specific endpoint can demand more:
+
+```properties
+full-security.service.required-roles=REPORTING
+
+full-security.rules[0].pattern=/internal/admin/**
+full-security.rules[0].roles=REPORTING_ADMIN
+```
+
+| Request | Result |
+|---|---|
+| No token | 401 |
+| Token without `REPORTING` | 403 |
+| Token with `REPORTING`, any normal endpoint | allowed |
+| Token with `REPORTING` on `/internal/admin/**` | 403 — that rule needs more |
+| A public endpoint, no token | allowed |
+
+### No `UserAuthenticationProvider` needed
+
+There is no local user record for another service, so the token's subject
+becomes the principal directly and account-state checks do not apply.
+`Authentication.getName()` returns the calling service's subject, and
+authorities come from the token's role claim and nothing else — a token with
+no role grants nothing, because there is no local record to fall back on.
+
+That is the only real difference from `CLIENT`. Verification is the same code:
+JWKS, issuer, audience, clock skew and algorithms all behave identically.
 
 ### Choosing a mode
 
 | | `CLIENT` | `SERVICE` |
 |---|---|---|
-| Credential | JWT bearer token | Shared key header |
-| Identity from | Token `sub` + your `loadUser` | Configured caller `id` |
-| Roles from | Token role claim | Configured caller roles |
-| Rotation | JWKS, no redeploy | Overlapping keys, no cutover |
-| Use for | End users, and machines already holding a JWT | Internal calls between your own services |
+| Caller | An end user | Another service |
+| Identity | Token `sub` resolved to a local user | Token `sub` |
+| Needs `UserAuthenticationProvider` | Yes | No |
+| Account state checked | Yes | Not applicable |
+| Gate | `rules` + `@PreAuthorize` | `required-roles` + `rules` |
 
-A service already holding a JWT should use `CLIENT`. Reach for `SERVICE` when
-there is no token to pass — a cron job, a worker, a legacy caller.
+### Callers that cannot obtain a token
 
-### Generating a key
-
-Shared secrets should be long and random. Not a password, not a UUID you
-picked by hand:
-
-```bash
-openssl rand -base64 32
-```
-
-Supply them through the environment. A key in a committed file is a key in
-your git history forever.
-
-### Calling from another service
-
-The calling side just sets a header.
-
-```java
-// Spring 6+ RestClient
-RestClient client = RestClient.builder()
-        .baseUrl("https://reporting-service")
-        .defaultHeader("X-API-Key", System.getenv("REPORTING_KEY"))
-        .build();
-```
-
-```java
-// WebClient
-WebClient client = WebClient.builder()
-        .baseUrl("https://reporting-service")
-        .defaultHeader("X-API-Key", System.getenv("REPORTING_KEY"))
-        .build();
-```
-
-```bash
-curl -H "X-API-Key: $REPORTING_KEY" https://reporting-service/api/v1/reports
-```
-
-### Restricting endpoints per calling service
-
-Give each caller its own role and gate on it, so a compromised key for one
-service does not open every endpoint:
+For a caller with no route to your auth service — a legacy job, a probe — a
+static shared key is also accepted:
 
 ```properties
-full-security.service.callers[0].id=orders-service
-full-security.service.callers[0].key=${ORDERS_SERVICE_KEY}
-full-security.service.callers[0].roles=ORDERS
-
-full-security.service.callers[1].id=billing-service
-full-security.service.callers[1].key=${BILLING_SERVICE_KEY}
-full-security.service.callers[1].roles=BILLING
-
-full-security.rules[0].pattern=/internal/orders/**
-full-security.rules[0].roles=ORDERS
-
-full-security.rules[1].pattern=/internal/billing/**
-full-security.rules[1].roles=BILLING
+full-security.service.callers[0].id=legacy-batch
+full-security.service.callers[0].key=${LEGACY_BATCH_KEY}
+full-security.service.callers[0].keys[0]=${LEGACY_BATCH_KEY_NEW}
+full-security.service.callers[0].roles=REPORTING
 ```
 
-### Rotating a key without downtime
+Only active when `callers` is configured. Keys are compared with
+`MessageDigest.isEqual` without an early exit, so timing reveals neither the
+match nor how many callers exist. Listing a second key lets you rotate
+without a synchronised cutover: add the new key, move the caller, drop the
+old one.
 
-A caller accepts more than one key, so the two sides never have to cut over
-at the same instant:
-
-```properties
-full-security.service.callers[0].id=orders-service
-full-security.service.callers[0].key=${ORDERS_SERVICE_KEY_OLD}
-full-security.service.callers[0].keys[0]=${ORDERS_SERVICE_KEY_NEW}
-```
-
-1. Add the new key here and deploy — both are accepted.
-2. Move the calling service to the new key and deploy.
-3. Drop the old key here and deploy.
-
-### How keys are compared
-
-Every configured credential is checked with `MessageDigest.isEqual`, and the
-loop does not exit early on a match — so neither the comparison nor the
-number of configured callers is visible in response timing.
-
-A request with **no** key header passes through untouched rather than being
-rejected, so public endpoints stay reachable and the authorization rules
-decide. A caller configured without any key fails the context at startup,
-naming the caller.
+Prefer real tokens. A shared key is a bearer credential that never expires
+and identifies no one.
 
 ### What this does not protect
 
@@ -356,11 +328,6 @@ naming the caller.
 > reachable by anyone who can open a socket to it, authenticated or not.
 > Protect gRPC with its own interceptor and keep that port off the public
 > network.
-
-Shared keys are bearer credentials: whoever holds one *is* that service.
-They do not expire, they do not identify a human, and they carry no
-audience. Keep them on private networks, rotate them, and prefer `CLIENT`
-with real tokens wherever a token already exists.
 
 ---
 
@@ -430,6 +397,7 @@ default.
 | `full-security.actuator.public-endpoints` | empty | Open actuator ids |
 | `full-security.actuator.roles` | empty | Roles for the rest of `/actuator/**` |
 | `full-security.cors.*` | disabled | See CORS above |
+| `full-security.service.required-roles` | empty | Role gating this service. Empty accepts any verified token |
 | `full-security.service.header` | `X-API-Key` | Header carrying the caller's key |
 | `full-security.service.callers[n].id` | — | Calling service name; becomes the principal |
 | `full-security.service.callers[n].key` | — | Shared secret. Supply from the environment |
@@ -516,3 +484,18 @@ Know these before adopting:
 ```bash
 ./mvnw clean install
 ```
+
+## Releasing
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which verifies the
+tag matches the project version, refuses SNAPSHOTs, runs the tests, then
+signs and publishes.
+
+```bash
+./mvnw versions:set -DnewVersion=0.1.0
+git commit -am "Release 0.1.0"
+git tag v0.1.0 && git push origin main --tags
+```
+
+Repository secrets required: `MAVEN_GPG_PRIVATE_KEY`, `MAVEN_GPG_PASSPHRASE`,
+`CENTRAL_USERNAME`, `CENTRAL_PASSWORD`.

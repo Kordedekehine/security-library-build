@@ -1,0 +1,65 @@
+name: Release to Maven Central
+
+# Publishes when you push a version tag, so a release comes from a commit
+# in this repository rather than whatever happens to be on a laptop.
+#
+#   mvn versions:set -DnewVersion=0.1.0
+#   git commit -am "Release 0.1.0" && git tag v0.1.0 && git push --tags
+#
+# Repository secrets required:
+#   MAVEN_GPG_PRIVATE_KEY   armoured private key: gpg --armor --export-secret-keys KEYID
+#   MAVEN_GPG_PASSPHRASE    passphrase for that key
+#   CENTRAL_USERNAME        user token from central.sonatype.com
+#   CENTRAL_PASSWORD        the matching token password
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          # Writes ~/.m2/settings.xml with a server id the publishing
+          # plugin looks for, and imports the signing key.
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_PASSWORD
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Check the tag matches the project version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          POM=$(./mvnw -q -DforceStdout help:evaluate -Dexpression=project.version)
+          echo "tag=$TAG pom=$POM"
+          if [ "$TAG" != "$POM" ]; then
+            echo "::error::Tag $TAG does not match project version $POM"
+            exit 1
+          fi
+          case "$POM" in
+            *-SNAPSHOT) echo "::error::Refusing to release a SNAPSHOT"; exit 1 ;;
+          esac
+
+      - name: Build and test
+        run: ./mvnw -B verify
+
+      - name: Publish
+        run: ./mvnw -B -Prelease deploy -DskipTests
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
