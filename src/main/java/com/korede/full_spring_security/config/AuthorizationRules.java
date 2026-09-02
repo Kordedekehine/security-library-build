@@ -8,8 +8,7 @@ import org.springframework.security.config.annotation.web.configurers.AuthorizeH
 import java.util.List;
 
 /**
- * Applies full-security.* authorization in a fixed order, shared by both
- * chains so CLIENT and SERVICE cannot drift apart:
+ * Applies full-security.* authorization in a fixed order:
  *
  *   0. ERROR/FORWARD/ASYNC     permitAll (container dispatches)
  *   1. public-endpoints        permitAll
@@ -31,16 +30,6 @@ final class AuthorizationRules {
 
     static void apply(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
             FullSecurityProperties properties) {
-
-        apply(auth, properties, List.of());
-    }
-
-    /**
-     * @param fallbackRoles roles required by anything no rule matched. Empty
-     *                      means any authenticated caller is accepted.
-     */
-    static void apply(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
-            FullSecurityProperties properties, List<String> fallbackRoles) {
 
         // Validate the whole config before registering anything, so a bad
         // rule fails the context instead of half-building a filter chain.
@@ -77,11 +66,7 @@ final class AuthorizationRules {
 
         properties.getRules().forEach(rule -> applyRule(auth, rule));
 
-        if (fallbackRoles.isEmpty()) {
-            auth.anyRequest().authenticated();
-        } else {
-            auth.anyRequest().hasAnyRole(stripPrefix(fallbackRoles));
-        }
+        auth.anyRequest().authenticated();
     }
 
     private static void applyRule(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,

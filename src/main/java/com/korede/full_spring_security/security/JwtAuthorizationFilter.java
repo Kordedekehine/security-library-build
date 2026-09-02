@@ -26,17 +26,11 @@ import java.util.List;
  *  ↓
  * Is it valid?        (one parse: signature, expiry, issuer, audience)
  *  ↓
- * Who is the caller?  (a local user in CLIENT mode; the token subject in SERVICE)
+ * Who is the user?    (UserAuthenticationProvider resolves the subject)
  *  ↓
  * What may they do?   (authorities from the token's role claim)
  *  ↓
  * SecurityContext
- *
- * The user lookup is optional. CLIENT mode supplies a
- * {@link UserAuthenticationProvider} so a token subject resolves to a local
- * account whose state can be checked. SERVICE mode does not - the caller is
- * another service, there is no local record of it, and the token is the whole
- * of what is known about it.
  */
 @Slf4j
 public class JwtAuthorizationFilter extends OncePerRequestFilter {
@@ -49,7 +43,6 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
 
     private final AuthenticationEntryPoint authenticationEntryPoint;
 
-    /** CLIENT mode: resolve the subject to a local user. */
     public JwtAuthorizationFilter(JwtService jwtService,
             UserAuthenticationProvider userAuthenticationProvider,
             AuthenticationEntryPoint authenticationEntryPoint) {
@@ -57,13 +50,6 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
         this.jwtService = jwtService;
         this.userAuthenticationProvider = userAuthenticationProvider;
         this.authenticationEntryPoint = authenticationEntryPoint;
-    }
-
-    /** SERVICE mode: trust the token alone; there is no local user to look up. */
-    public JwtAuthorizationFilter(JwtService jwtService,
-            AuthenticationEntryPoint authenticationEntryPoint) {
-
-        this(jwtService, null, authenticationEntryPoint);
     }
 
     @Override
@@ -99,42 +85,35 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
                 throw new BadCredentialsException("Token carries no subject");
             }
 
-            Object principal = subject;
+            UserDetails user = userAuthenticationProvider.loadUser(subject);
+
+            if (user == null) {
+                throw new BadCredentialsException("No user for token subject");
+            }
+
+            if (!user.isEnabled()) {
+                throw new DisabledException("Account is disabled");
+            }
+
+            if (!user.isAccountNonLocked()) {
+                throw new LockedException("Account is locked");
+            }
+
+            if (!user.isAccountNonExpired() || !user.isCredentialsNonExpired()) {
+                throw new BadCredentialsException("Account or credentials expired");
+            }
 
             List<GrantedAuthority> authorities = tokenAuthorities(claims);
 
-            if (userAuthenticationProvider != null) {
-
-                UserDetails user = userAuthenticationProvider.loadUser(subject);
-
-                if (user == null) {
-                    throw new BadCredentialsException("No user for token subject");
-                }
-
-                if (!user.isEnabled()) {
-                    throw new DisabledException("Account is disabled");
-                }
-
-                if (!user.isAccountNonLocked()) {
-                    throw new LockedException("Account is locked");
-                }
-
-                if (!user.isAccountNonExpired() || !user.isCredentialsNonExpired()) {
-                    throw new BadCredentialsException("Account or credentials expired");
-                }
-
-                principal = user;
-
-                // The issuer is authoritative for roles; the local record is
-                // only consulted when the token says nothing about them.
-                if (authorities.isEmpty()) {
-                    authorities = List.copyOf(user.getAuthorities());
-                }
+            // The issuer is authoritative for roles; the local record is only
+            // consulted when the token says nothing about them.
+            if (authorities.isEmpty()) {
+                authorities = List.copyOf(user.getAuthorities());
             }
 
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(
-                            principal, null, authorities);
+                            user, null, authorities);
 
             authentication.setDetails(new WebAuthenticationDetailsSource()
                     .buildDetails(request)

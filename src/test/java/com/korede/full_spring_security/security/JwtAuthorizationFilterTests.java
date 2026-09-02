@@ -20,14 +20,9 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
-/**
- * SERVICE mode has no local user record for a calling service, so the token
- * is the whole of what is known about the caller.
- */
 class JwtAuthorizationFilterTests {
 
     private static KeyPair keyPair;
@@ -76,76 +71,6 @@ class JwtAuthorizationFilterTests {
         filter.doFilter(request, response, mock(FilterChain.class));
 
         return SecurityContextHolder.getContext().getAuthentication();
-    }
-
-    @Test
-    void serviceModeTakesTheSubjectAsPrincipalAndRolesFromTheToken() throws Exception {
-
-        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
-                new JwtService(properties()), entryPoint);
-
-        Authentication authentication = run(filter,
-                token("orders-service", "ORDERS"), new MockHttpServletResponse());
-
-        assertNotNull(authentication);
-        assertEquals("orders-service", authentication.getName());
-        assertEquals("orders-service", authentication.getPrincipal());
-        assertTrue(authentication.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("ROLE_ORDERS")));
-    }
-
-    @Test
-    void serviceModeGrantsNothingWhenTheTokenCarriesNoRole() throws Exception {
-
-        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
-                new JwtService(properties()), entryPoint);
-
-        Authentication authentication = run(filter,
-                token("orders-service", null), new MockHttpServletResponse());
-
-        assertNotNull(authentication);
-        assertTrue(authentication.getAuthorities().isEmpty(),
-                "no local record to fall back on, so a role-gated endpoint must 403");
-    }
-
-    @Test
-    void serviceModeReadsSeveralRolesFromAnArrayClaim() throws Exception {
-
-        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
-                new JwtService(properties()), entryPoint);
-
-        Authentication authentication = run(filter,
-                token("billing-service", List.of("BILLING", "REPORTING")),
-                new MockHttpServletResponse());
-
-        assertEquals(2, authentication.getAuthorities().size());
-        assertTrue(authentication.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("ROLE_BILLING")));
-        assertTrue(authentication.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("ROLE_REPORTING")));
-    }
-
-    @Test
-    void serviceModeRejectsATokenSignedByAnotherKey() throws Exception {
-
-        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
-
-        String foreign = Jwts.builder()
-                .subject("attacker")
-                .claim("role", "ORDERS")
-                .expiration(new Date(System.currentTimeMillis() + 60_000))
-                .signWith(generator.generateKeyPair().getPrivate())
-                .compact();
-
-        MockHttpServletResponse response = new MockHttpServletResponse();
-
-        Authentication authentication = run(
-                new JwtAuthorizationFilter(new JwtService(properties()), entryPoint),
-                foreign, response);
-
-        assertNull(authentication);
-        assertEquals(401, response.getStatus());
     }
 
     @Test

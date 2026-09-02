@@ -18,8 +18,6 @@ public class FullSecurityProperties {
 
     private Cors cors = new Cors();
 
-    private Service service = new Service();
-
     /** Ordered role rules, evaluated after public endpoints. First match wins. */
     private List<Rule> rules = new ArrayList<>();
 
@@ -131,49 +129,6 @@ public class FullSecurityProperties {
         private List<String> publicEndpoints = new ArrayList<>();
 
         /** Roles required for every other /actuator/** endpoint. */
-        private List<String> roles = new ArrayList<>();
-    }
-
-    /**
-     * Service-to-service authentication for SERVICE mode: a shared key sent
-     * in a header, mapped to a named caller and its roles.
-     */
-    @Data
-    public static class Service {
-
-        /**
-         * The role this service is gated on. A caller's token must carry one
-         * of these for any endpoint that is not public or matched by a more
-         * specific rule.
-         *
-         * Empty means any verified token is accepted.
-         */
-        private List<String> requiredRoles = new ArrayList<>();
-
-        /** Header carrying the shared key, for the api-key mechanism. */
-        private String header = "X-API-Key";
-
-        /** Optional: callers authenticating with a static shared key instead. */
-        private List<Caller> callers = new ArrayList<>();
-    }
-
-    @Data
-    public static class Caller {
-
-        /** Name of the calling service. Becomes the authenticated principal. */
-        private String id;
-
-        /** Shared secret. Supply from the environment, never in a committed file. */
-        private String key;
-
-        /**
-         * Additional accepted secrets. During a rotation set both the old and
-         * the new key here so the caller can be redeployed independently -
-         * with a single key, both sides must cut over at the same instant.
-         */
-        private List<String> keys = new ArrayList<>();
-
-        /** Roles granted to this caller. ROLE_ prefix optional. */
         private List<String> roles = new ArrayList<>();
     }
 }
