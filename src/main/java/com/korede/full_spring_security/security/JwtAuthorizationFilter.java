@@ -1,6 +1,5 @@
 package com.korede.full_spring_security.security;
 
-import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -72,9 +71,9 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
             String jwt = authHeader.substring(7);
 
             // Single parse - signature, expiry, issuer and audience.
-            Claims claims = jwtService.parseClaims(jwt);
+            TokenClaims claims = jwtService.verify(jwt);
 
-            String username = claims.getSubject();
+            String username = claims.subject();
 
             if (username == null || username.isBlank()) {
                 throw new BadCredentialsException("Token carries no subject");
@@ -133,7 +132,7 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
      * roles the principal's own authorities are used, which keeps tokens that
      * predate the claim working.
      */
-    private List<GrantedAuthority> authorities(Claims claims, UserDetails principal) {
+    private List<GrantedAuthority> authorities(TokenClaims claims, UserDetails principal) {
 
         List<String> roles = jwtService.extractRoles(claims);
 

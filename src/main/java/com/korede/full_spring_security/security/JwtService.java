@@ -7,20 +7,18 @@ import io.jsonwebtoken.JwtParserBuilder;
 import io.jsonwebtoken.Jwts;
 import lombok.RequiredArgsConstructor;
 
-import java.security.KeyFactory;
-import java.security.PublicKey;
-import java.security.spec.X509EncodedKeySpec;
-import java.util.Base64;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Function;
 
 /**
- * Verification only - this library holds a public key and never signs.
+ * Verification only - this library holds public keys and never signs.
  *
  * The parser is built once and reused. Verifying a token is a single parse:
  * signature, expiry, issuer and audience are all checked by that one call.
+ *
+ * Keys come from either a static configured public key (RSA, EC or EdDSA) or
+ * a JWKS endpoint, selected by the token's "kid".
  */
 @RequiredArgsConstructor
 public class JwtService {
@@ -30,28 +28,32 @@ public class JwtService {
     private volatile JwtParser parser;
 
     /**
-     * Verifies signature, expiry and any configured issuer/audience, and
-     * returns the claims. Throws if the token is not valid for this service.
+     * Verifies signature, expiry and any configured issuer and audience.
+     *
+     * @throws RuntimeException when the token is not valid for this service
      */
-    public Claims parseClaims(String token) {
-        return parser().parseSignedClaims(token).getPayload();
+    public TokenClaims verify(String token) {
+
+        Claims claims = parser().parseSignedClaims(token).getPayload();
+
+        return new TokenClaims(claims);
     }
 
     public String extractUsername(String token) {
-        return parseClaims(token).getSubject();
+        return verify(token).subject();
     }
 
     /**
-     * Roles carried by the token, from the configured role claim. Accepts a
-     * single string or an array; returns empty when the claim is absent.
+     * Roles carried by the token, read from the configured role claim.
+     * Accepts a single string or an array; empty when the claim is absent.
      */
     public List<String> extractRoles(String token) {
-        return extractRoles(parseClaims(token));
+        return extractRoles(verify(token));
     }
 
-    public List<String> extractRoles(Claims claims) {
+    public List<String> extractRoles(TokenClaims claims) {
 
-        Object raw = claims.get(properties.getClient().getRoleClaim());
+        Object raw = claims.claim(properties.getClient().getRoleClaim());
 
         if (raw == null) {
             return List.of();
@@ -70,15 +72,11 @@ public class JwtService {
         return value.isBlank() ? List.of() : List.of(value);
     }
 
-    public <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
-        return claimsResolver.apply(parseClaims(token));
-    }
-
     /** True when the token verifies and its subject matches. */
     public boolean isTokenValid(String token, String username) {
 
         try {
-            return Objects.equals(username, parseClaims(token).getSubject());
+            return Objects.equals(username, verify(token).subject());
 
         } catch (Exception e) {
             return false;
@@ -88,7 +86,7 @@ public class JwtService {
     public boolean isSignatureValid(String token) {
 
         try {
-            parseClaims(token);
+            verify(token);
             return true;
 
         } catch (Exception e) {
@@ -111,8 +109,9 @@ public class JwtService {
                 FullSecurityProperties.Client client = properties.getClient();
 
                 JwtParserBuilder builder = Jwts.parser()
-                        .verifyWith(publicKey())
                         .clockSkewSeconds(client.getClockSkewSeconds());
+
+                applyKeySource(builder, client);
 
                 if (client.getIssuer() != null && !client.getIssuer().isBlank()) {
                     builder.requireIssuer(client.getIssuer());
@@ -129,28 +128,30 @@ public class JwtService {
         }
     }
 
-    private PublicKey publicKey() {
+    private void applyKeySource(JwtParserBuilder builder,
+            FullSecurityProperties.Client client) {
 
-        String publicKey = properties.getClient().getPublicKey();
+        boolean hasJwks = client.getJwksUri() != null && !client.getJwksUri().isBlank();
+        boolean hasStatic = client.getPublicKey() != null && !client.getPublicKey().isBlank();
 
-        if (publicKey == null || publicKey.isBlank()) {
-            throw new IllegalStateException(
-                    "full-security.client.public-key is not set. Provide the "
-                    + "Base64-encoded X.509 RSA public key used to verify "
-                    + "incoming JWTs, for example:\n\n"
-                    + "  full-security.client.public-key=${JWT_PUBLIC_KEY}\n");
+        if (hasJwks) {
+            builder.keyLocator(new JwksKeyLocator(
+                    client.getJwksUri(),
+                    client.getJwksCacheTtl(),
+                    client.getJwksRefreshCooldown(),
+                    client.getJwksTimeout()));
+            return;
         }
 
-        try {
-
-            byte[] keyBytes = Base64.getDecoder().decode(publicKey);
-
-            X509EncodedKeySpec spec = new X509EncodedKeySpec(keyBytes);
-
-            return KeyFactory.getInstance("RSA").generatePublic(spec);
-
-        } catch (Exception e) {
-            throw new IllegalStateException("Unable to load JWT public key", e);
+        if (hasStatic) {
+            builder.verifyWith(
+                    VerificationKeys.parse(client.getPublicKey(), client.getKeyAlgorithm()));
+            return;
         }
+
+        throw new IllegalStateException(
+                "No JWT verification key configured. Set one of:\n\n"
+                + "  full-security.client.jwks-uri=https://issuer/.well-known/jwks.json\n"
+                + "  full-security.client.public-key=${JWT_PUBLIC_KEY}\n");
     }
 }

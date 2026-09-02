@@ -106,7 +106,7 @@ class JwtServiceTests {
         String jwt = token(Map.of(), null, null, -3600);
 
         assertFalse(service.isSignatureValid(jwt));
-        assertThrows(Exception.class, () -> service.parseClaims(jwt));
+        assertThrows(Exception.class, () -> service.verify(jwt));
     }
 
     @Test
@@ -149,13 +149,75 @@ class JwtServiceTests {
     }
 
     @Test
-    void namesTheMissingPublicKeyProperty() {
+    void verifiesAnEllipticCurveToken() throws Exception {
+
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(256);
+        KeyPair ec = generator.generateKeyPair();
+
+        FullSecurityProperties properties = new FullSecurityProperties();
+        properties.getClient().setPublicKey(
+                Base64.getEncoder().encodeToString(ec.getPublic().getEncoded()));
+
+        String jwt = Jwts.builder()
+                .subject("taiwo")
+                .claim("role", "ADMIN")
+                .expiration(new Date(System.currentTimeMillis() + 60_000))
+                .signWith(ec.getPrivate())
+                .compact();
+
+        JwtService service = new JwtService(properties);
+
+        assertEquals("taiwo", service.extractUsername(jwt));
+        assertEquals(List.of("ADMIN"), service.extractRoles(jwt));
+    }
+
+    @Test
+    void acceptsAKeyPastedWithPemArmourAndNewlines() {
+
+        String raw = Base64.getEncoder().encodeToString(keyPair.getPublic().getEncoded());
+
+        StringBuilder pem = new StringBuilder("-----BEGIN PUBLIC KEY-----\n");
+        for (int i = 0; i < raw.length(); i += 64) {
+            pem.append(raw, i, Math.min(i + 64, raw.length())).append('\n');
+        }
+        pem.append("-----END PUBLIC KEY-----\n");
+
+        FullSecurityProperties properties = new FullSecurityProperties();
+        properties.getClient().setPublicKey(pem.toString());
+
+        JwtService service = new JwtService(properties);
+
+        assertEquals("taiwo",
+                service.extractUsername(token(Map.of(), null, null, 60)));
+    }
+
+    @Test
+    void exposesClaimsWithoutTheJwtLibrarysTypes() {
+
+        JwtService service = new JwtService(properties());
+
+        TokenClaims claims = service.verify(
+                token(Map.of("role", "ADMIN", "tenant", "acme"), "auth-service", "orders", 60));
+
+        assertEquals("taiwo", claims.subject());
+        assertEquals("auth-service", claims.issuer());
+        assertTrue(claims.audience().contains("orders"));
+        assertEquals("acme", claims.claim("tenant", String.class));
+        assertTrue(claims.expiresAt().isAfter(java.time.Instant.now()));
+        assertThrows(IllegalArgumentException.class,
+                () -> claims.claim("tenant", Integer.class));
+    }
+
+    @Test
+    void namesTheMissingKeyConfigurationWhenNeitherSourceIsSet() {
 
         JwtService service = new JwtService(new FullSecurityProperties());
 
         IllegalStateException e = assertThrows(IllegalStateException.class,
-                () -> service.parseClaims("any.token.here"));
+                () -> service.verify("any.token.here"));
 
-        assertTrue(e.getMessage().contains("full-security.client.public-key"));
+        assertTrue(e.getMessage().contains("jwks-uri"));
+        assertTrue(e.getMessage().contains("public-key"));
     }
 }
