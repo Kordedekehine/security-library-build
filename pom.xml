@@ -13,12 +13,34 @@
 		<relativePath/>
 	</parent>
 
-	<groupId>com.korede</groupId>
+	<groupId>io.github.kordedekehine</groupId>
 	<artifactId>full-spring-security</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>0.1.0-SNAPSHOT</version>
 
 	<name>full-spring-security</name>
-	<description>Declarative Spring Security starter</description>
+	<description>Stateless JWT and service-to-service security for Spring Boot, in one annotation</description>
+	<url>https://github.com/Kordedekehine/security-library-build</url>
+
+	<licenses>
+		<license>
+			<name>Apache License, Version 2.0</name>
+			<url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+			<distribution>repo</distribution>
+		</license>
+	</licenses>
+
+	<developers>
+		<developer>
+			<id>Kordedekehine</id>
+			<url>https://github.com/Kordedekehine</url>
+		</developer>
+	</developers>
+
+	<scm>
+		<connection>scm:git:https://github.com/Kordedekehine/security-library-build.git</connection>
+		<developerConnection>scm:git:ssh://git@github.com/Kordedekehine/security-library-build.git</developerConnection>
+		<url>https://github.com/Kordedekehine/security-library-build</url>
+	</scm>
 
 	<properties>
 		<java.version>21</java.version>
@@ -79,6 +101,88 @@
 			<scope>provided</scope>
 		</dependency>
 
+		<!-- Generates metadata so IDEs autocomplete full-security.* -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-configuration-processor</artifactId>
+			<optional>true</optional>
+		</dependency>
+
 	</dependencies>
+
+	<build>
+		<plugins>
+
+			<!-- Maven Central requires a sources jar -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-source-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>attach-sources</id>
+						<goals>
+							<goal>jar-no-fork</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- Maven Central requires a javadoc jar -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-javadoc-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>attach-javadocs</id>
+						<goals>
+							<goal>jar</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+		</plugins>
+	</build>
+
+	<profiles>
+		<!--
+			Release-only. Signing and publishing need credentials, so a normal
+			build stays runnable without a GPG key configured.
+
+			mvn -Prelease deploy
+		-->
+		<profile>
+			<id>release</id>
+			<build>
+				<plugins>
+
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-gpg-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>sign-artifacts</id>
+								<phase>verify</phase>
+								<goals>
+									<goal>sign</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+
+					<plugin>
+						<groupId>org.sonatype.central</groupId>
+						<artifactId>central-publishing-maven-plugin</artifactId>
+						<version>0.7.0</version>
+						<extensions>true</extensions>
+						<configuration>
+							<publishingServerId>central</publishingServerId>
+						</configuration>
+					</plugin>
+
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
 
 </project>
