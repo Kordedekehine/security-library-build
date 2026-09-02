@@ -4,6 +4,7 @@ import com.korede.full_spring_security.security.FullSecurityAccessDeniedHandler;
 import com.korede.full_spring_security.security.FullSecurityAuthenticationEntryPoint;
 import com.korede.full_spring_security.security.JwtAuthorizationFilter;
 import com.korede.full_spring_security.security.JwtService;
+import com.korede.full_spring_security.security.TokenRevocationChecker;
 import com.korede.full_spring_security.security.UserAuthenticationProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -19,6 +20,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+import java.util.List;
 
 /**
  * CSRF disabled
@@ -65,7 +68,9 @@ public class ClientSecurityConfiguration {
             FullSecurityProperties properties,
             AuthenticationEntryPoint authenticationEntryPoint,
             AccessDeniedHandler accessDeniedHandler,
-            ObjectProvider<UserAuthenticationProvider> providers) throws Exception {
+            ObjectProvider<UserAuthenticationProvider> providers,
+            ObjectProvider<TokenRevocationChecker> revocationCheckers,
+            ObjectProvider<FullSecurityCustomizer> customizers) throws Exception {
 
         log.info("PUBLIC ENDPOINTS: {}", properties.getPublicEndpoints());
 
@@ -83,8 +88,16 @@ public class ClientSecurityConfiguration {
                     + "  }\n");
         }
 
+        List<TokenRevocationChecker> checkers =
+                revocationCheckers.orderedStream().toList();
+
+        if (!checkers.isEmpty()) {
+            log.info("REVOCATION CHECKS: {}", checkers.size());
+        }
+
         JwtAuthorizationFilter jwtAuthorizationFilter = new JwtAuthorizationFilter(
-                jwtService, userAuthenticationProvider, authenticationEntryPoint);
+                jwtService, userAuthenticationProvider, authenticationEntryPoint,
+                checkers);
 
         http
                 .csrf(csrf -> csrf.disable())
@@ -112,6 +125,17 @@ public class ClientSecurityConfiguration {
                 .addFilterBefore(jwtAuthorizationFilter,
                         UsernamePasswordAuthenticationFilter.class
                 );
+
+        // Last, so a consumer can add to the chain or override what the
+        // library set. A customizer can also weaken it - that is the point of
+        // an escape hatch, and the reason they are logged.
+        for (FullSecurityCustomizer customizer : customizers.orderedStream().toList()) {
+
+            log.info("APPLYING SECURITY CUSTOMIZER: {}",
+                    customizer.getClass().getName());
+
+            customizer.customize(http);
+        }
 
         return http.build();
     }

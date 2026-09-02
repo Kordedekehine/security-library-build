@@ -19,6 +19,8 @@ import java.util.Date;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -107,5 +109,85 @@ class JwtAuthorizationFilterTests {
 
         assertTrue(authentication.getAuthorities().stream()
                 .anyMatch(a -> a.getAuthority().equals("ROLE_LEGACY")));
+    }
+
+    @Test
+    void rejectsARevokedTokenWith401() throws Exception {
+
+        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
+                new JwtService(properties()),
+                username -> User.withUsername(username).password("").roles("USER").build(),
+                entryPoint,
+                List.of(claims -> true));
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertNull(run(filter, token("taiwo", "ADMIN"), response));
+        assertEquals(401, response.getStatus());
+    }
+
+    @Test
+    void letsAThroughTokenNoCheckerRevokes() throws Exception {
+
+        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
+                new JwtService(properties()),
+                username -> User.withUsername(username).password("").roles("USER").build(),
+                entryPoint,
+                List.of(claims -> false, claims -> false));
+
+        assertNotNull(run(filter, token("taiwo", "ADMIN"), new MockHttpServletResponse()));
+    }
+
+    @Test
+    void anyCheckerCanRevoke() throws Exception {
+
+        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
+                new JwtService(properties()),
+                username -> User.withUsername(username).password("").roles("USER").build(),
+                entryPoint,
+                List.of(claims -> false, claims -> "taiwo".equals(claims.subject())));
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertNull(run(filter, token("taiwo", "ADMIN"), response));
+        assertEquals(401, response.getStatus());
+    }
+
+    @Test
+    void aCheckerThatThrowsFailsClosed() throws Exception {
+
+        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
+                new JwtService(properties()),
+                username -> User.withUsername(username).password("").roles("USER").build(),
+                entryPoint,
+                List.of(claims -> {
+                    throw new IllegalStateException("denylist unreachable");
+                }));
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertNull(run(filter, token("taiwo", "ADMIN"), response),
+                "an unreachable denylist must not become a way to use revoked tokens");
+        assertEquals(401, response.getStatus());
+    }
+
+    @Test
+    void revocationIsCheckedBeforeTheUserLookup() throws Exception {
+
+        boolean[] loadUserCalled = { false };
+
+        JwtAuthorizationFilter filter = new JwtAuthorizationFilter(
+                new JwtService(properties()),
+                username -> {
+                    loadUserCalled[0] = true;
+                    return User.withUsername(username).password("").roles("USER").build();
+                },
+                entryPoint,
+                List.of(claims -> true));
+
+        run(filter, token("taiwo", "ADMIN"), new MockHttpServletResponse());
+
+        assertFalse(loadUserCalled[0],
+                "a revoked token should not cost a user lookup");
     }
 }

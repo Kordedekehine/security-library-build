@@ -26,6 +26,8 @@ import java.util.List;
  *  ↓
  * Is it valid?        (one parse: signature, expiry, issuer, audience)
  *  ↓
+ * Still honoured?     (TokenRevocationChecker, when any are registered)
+ *  ↓
  * Who is the user?    (UserAuthenticationProvider resolves the subject)
  *  ↓
  * What may they do?   (authorities from the token's role claim)
@@ -43,13 +45,24 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
 
     private final AuthenticationEntryPoint authenticationEntryPoint;
 
+    private final List<TokenRevocationChecker> revocationCheckers;
+
     public JwtAuthorizationFilter(JwtService jwtService,
             UserAuthenticationProvider userAuthenticationProvider,
             AuthenticationEntryPoint authenticationEntryPoint) {
 
+        this(jwtService, userAuthenticationProvider, authenticationEntryPoint, List.of());
+    }
+
+    public JwtAuthorizationFilter(JwtService jwtService,
+            UserAuthenticationProvider userAuthenticationProvider,
+            AuthenticationEntryPoint authenticationEntryPoint,
+            List<TokenRevocationChecker> revocationCheckers) {
+
         this.jwtService = jwtService;
         this.userAuthenticationProvider = userAuthenticationProvider;
         this.authenticationEntryPoint = authenticationEntryPoint;
+        this.revocationCheckers = List.copyOf(revocationCheckers);
     }
 
     @Override
@@ -83,6 +96,10 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
 
             if (subject == null || subject.isBlank()) {
                 throw new BadCredentialsException("Token carries no subject");
+            }
+
+            if (isRevoked(claims)) {
+                throw new BadCredentialsException("Token has been revoked");
             }
 
             UserDetails user = userAuthenticationProvider.loadUser(subject);
@@ -135,6 +152,29 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * A checker that throws is treated as a rejection: an unreachable denylist
+     * must not become a way to use revoked tokens.
+     */
+    private boolean isRevoked(TokenClaims claims) {
+
+        for (TokenRevocationChecker checker : revocationCheckers) {
+
+            try {
+                if (checker.isRevoked(claims)) {
+                    return true;
+                }
+
+            } catch (Exception e) {
+                log.warn("Revocation check {} failed; rejecting the token",
+                        checker.getClass().getName(), e);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** Authorities named by the token's role claim, ROLE_-prefixed. */
