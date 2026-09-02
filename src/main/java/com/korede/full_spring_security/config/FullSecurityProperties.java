@@ -17,6 +17,13 @@ public class FullSecurityProperties {
 
     private Cors cors = new Cors();
 
+    /** Ordered role rules, evaluated after public endpoints. First match wins. */
+    private List<Rule> rules = new ArrayList<>();
+
+    private Swagger swagger = new Swagger();
+
+    private Actuator actuator = new Actuator();
+
     @Data
     public static class Client {
 
@@ -51,5 +58,53 @@ public class FullSecurityProperties {
         private boolean allowCredentials = false;
 
         private long maxAgeSeconds = 3600;
+    }
+
+    /**
+     * One authorization rule. Exactly one outcome must be chosen: permit-all,
+     * a role list, or plain authenticated.
+     */
+    @Data
+    public static class Rule {
+
+        /** Ant pattern, e.g. /api/v1/admin/**. Required. */
+        private String pattern;
+
+        /** Caller needs any one of these. ROLE_ prefix optional. */
+        private List<String> roles = new ArrayList<>();
+
+        /** Limit the rule to these HTTP methods. Empty means all. */
+        private List<String> methods = new ArrayList<>();
+
+        /** Open this pattern to everyone. */
+        private boolean permitAll = false;
+
+        /** Require a valid token but no particular role. */
+        private boolean authenticated = false;
+    }
+
+    @Data
+    public static class Swagger {
+
+        private boolean enabled = false;
+
+        /** springdoc/OpenAPI surfaces opened when enabled. */
+        private List<String> paths = new ArrayList<>(List.of(
+                "/swagger-ui.html",
+                "/swagger-ui/**",
+                "/v3/api-docs",
+                "/v3/api-docs/**",
+                "/swagger-resources/**",
+                "/webjars/**"));
+    }
+
+    @Data
+    public static class Actuator {
+
+        /** Endpoint ids reachable without a token, e.g. health, info. */
+        private List<String> publicEndpoints = new ArrayList<>();
+
+        /** Roles required for every other /actuator/** endpoint. */
+        private List<String> roles = new ArrayList<>();
     }
 }
