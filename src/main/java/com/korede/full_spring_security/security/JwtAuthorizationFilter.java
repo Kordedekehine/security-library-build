@@ -4,7 +4,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -27,15 +26,19 @@ import java.util.List;
  *  ↓
  * Is it valid?        (one parse: signature, expiry, issuer, audience)
  *  ↓
- * Who is the user?    (UserAuthenticationProvider resolves identity)
+ * Who is the caller?  (a local user in CLIENT mode; the token subject in SERVICE)
  *  ↓
  * What may they do?   (authorities from the token's role claim)
  *  ↓
  * SecurityContext
+ *
+ * The user lookup is optional. CLIENT mode supplies a
+ * {@link UserAuthenticationProvider} so a token subject resolves to a local
+ * account whose state can be checked. SERVICE mode does not - the caller is
+ * another service, there is no local record of it, and the token is the whole
+ * of what is known about it.
  */
-
 @Slf4j
-@RequiredArgsConstructor
 public class JwtAuthorizationFilter extends OncePerRequestFilter {
 
     private static final String ROLE_PREFIX = "ROLE_";
@@ -45,6 +48,23 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
     private final UserAuthenticationProvider userAuthenticationProvider;
 
     private final AuthenticationEntryPoint authenticationEntryPoint;
+
+    /** CLIENT mode: resolve the subject to a local user. */
+    public JwtAuthorizationFilter(JwtService jwtService,
+            UserAuthenticationProvider userAuthenticationProvider,
+            AuthenticationEntryPoint authenticationEntryPoint) {
+
+        this.jwtService = jwtService;
+        this.userAuthenticationProvider = userAuthenticationProvider;
+        this.authenticationEntryPoint = authenticationEntryPoint;
+    }
+
+    /** SERVICE mode: trust the token alone; there is no local user to look up. */
+    public JwtAuthorizationFilter(JwtService jwtService,
+            AuthenticationEntryPoint authenticationEntryPoint) {
+
+        this(jwtService, null, authenticationEntryPoint);
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -73,36 +93,48 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
             // Single parse - signature, expiry, issuer and audience.
             TokenClaims claims = jwtService.verify(jwt);
 
-            String username = claims.subject();
+            String subject = claims.subject();
 
-            if (username == null || username.isBlank()) {
+            if (subject == null || subject.isBlank()) {
                 throw new BadCredentialsException("Token carries no subject");
             }
 
-            UserDetails principal = userAuthenticationProvider.loadUser(username);
+            Object principal = subject;
 
-            if (principal == null) {
-                throw new BadCredentialsException("No user for token subject");
-            }
+            List<GrantedAuthority> authorities = tokenAuthorities(claims);
 
-            if (!principal.isEnabled()) {
-                throw new DisabledException("Account is disabled");
-            }
+            if (userAuthenticationProvider != null) {
 
-            if (!principal.isAccountNonLocked()) {
-                throw new LockedException("Account is locked");
-            }
+                UserDetails user = userAuthenticationProvider.loadUser(subject);
 
-            if (!principal.isAccountNonExpired() || !principal.isCredentialsNonExpired()) {
-                throw new BadCredentialsException("Account or credentials expired");
+                if (user == null) {
+                    throw new BadCredentialsException("No user for token subject");
+                }
+
+                if (!user.isEnabled()) {
+                    throw new DisabledException("Account is disabled");
+                }
+
+                if (!user.isAccountNonLocked()) {
+                    throw new LockedException("Account is locked");
+                }
+
+                if (!user.isAccountNonExpired() || !user.isCredentialsNonExpired()) {
+                    throw new BadCredentialsException("Account or credentials expired");
+                }
+
+                principal = user;
+
+                // The issuer is authoritative for roles; the local record is
+                // only consulted when the token says nothing about them.
+                if (authorities.isEmpty()) {
+                    authorities = List.copyOf(user.getAuthorities());
+                }
             }
 
             UsernamePasswordAuthenticationToken authentication =
                     new UsernamePasswordAuthenticationToken(
-                            principal,
-                            null,
-                            authorities(claims, principal)
-                    );
+                            principal, null, authorities);
 
             authentication.setDetails(new WebAuthenticationDetailsSource()
                     .buildDetails(request)
@@ -126,21 +158,10 @@ public class JwtAuthorizationFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
-    /**
-     * The issuer is the source of truth for what the caller may do, so
-     * authorities come from the token's role claim. When the token carries no
-     * roles the principal's own authorities are used, which keeps tokens that
-     * predate the claim working.
-     */
-    private List<GrantedAuthority> authorities(TokenClaims claims, UserDetails principal) {
+    /** Authorities named by the token's role claim, ROLE_-prefixed. */
+    private List<GrantedAuthority> tokenAuthorities(TokenClaims claims) {
 
-        List<String> roles = jwtService.extractRoles(claims);
-
-        if (roles.isEmpty()) {
-            return List.copyOf(principal.getAuthorities());
-        }
-
-        return roles.stream()
+        return jwtService.extractRoles(claims).stream()
                 .map(role -> role.startsWith(ROLE_PREFIX) ? role : ROLE_PREFIX + role)
                 .distinct()
                 .<GrantedAuthority>map(SimpleGrantedAuthority::new)

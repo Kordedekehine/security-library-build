@@ -3,6 +3,8 @@ package com.korede.full_spring_security.config;
 import com.korede.full_spring_security.security.ApiKeyAuthenticationFilter;
 import com.korede.full_spring_security.security.FullSecurityAccessDeniedHandler;
 import com.korede.full_spring_security.security.FullSecurityAuthenticationEntryPoint;
+import com.korede.full_spring_security.security.JwtAuthorizationFilter;
+import com.korede.full_spring_security.security.JwtService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -15,8 +17,12 @@ import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 /**
- * Service-to-service security: callers identify themselves with a shared key
- * in a header rather than a user token.
+ * Security for a service called by other services.
+ *
+ * Callers arrive holding a JWT they obtained elsewhere - your auth service
+ * exchanges their credentials for one. This service does not issue tokens; it
+ * verifies the one presented and checks it carries the role that opens this
+ * service.
  *
  * CSRF disabled
  *         ↓
@@ -24,17 +30,27 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  *         ↓
  * public endpoints
  *         ↓
- * API key authentication
+ * JWT verification
  *         ↓
- * role rules
+ * required role
  *         ↓
  * 401 / 403 as JSON
+ *
+ * The difference from CLIENT is only who the caller is: there is no local
+ * user record for another service, so the token's subject is the principal
+ * and no UserAuthenticationProvider is needed.
  */
 
 @Slf4j
 @EnableMethodSecurity
 @EnableConfigurationProperties(FullSecurityProperties.class)
 public class ServiceSecurityConfiguration {
+
+    @Bean
+    public JwtService jwtService(FullSecurityProperties properties) {
+
+        return new JwtService(properties);
+    }
 
     @Bean
     public AuthenticationEntryPoint fullSecurityAuthenticationEntryPoint() {
@@ -51,30 +67,16 @@ public class ServiceSecurityConfiguration {
     @Bean
     SecurityFilterChain serviceSecurityFilterChain(
             HttpSecurity http,
+            JwtService jwtService,
             FullSecurityProperties properties,
             AuthenticationEntryPoint authenticationEntryPoint,
             AccessDeniedHandler accessDeniedHandler) throws Exception {
 
+        FullSecurityProperties.Service service = properties.getService();
+
         log.info("PUBLIC ENDPOINTS: {}", properties.getPublicEndpoints());
-
-        boolean hasCallers = !properties.getService().getCallers().isEmpty();
-
-        boolean requiresIdentity = properties.getRules().stream()
-                .anyMatch(rule -> rule.isAuthenticated() || !rule.getRoles().isEmpty())
-                || !properties.getActuator().getRoles().isEmpty();
-
-        if (requiresIdentity && !hasCallers) {
-            log.warn("@FullSpringSecurity(type = SERVICE) has rules requiring a "
-                    + "role or an authenticated caller, but no "
-                    + "full-security.service.callers are configured - nothing "
-                    + "can satisfy them and those endpoints will always return "
-                    + "403.");
-        }
-
-        if (hasCallers) {
-            log.info("SERVICE CALLERS: {}", properties.getService().getCallers()
-                    .stream().map(FullSecurityProperties.Caller::getId).toList());
-        }
+        log.info("REQUIRED ROLES: {}", service.getRequiredRoles().isEmpty()
+                ? "any verified token" : service.getRequiredRoles());
 
         http
                 .csrf(csrf -> csrf.disable())
@@ -84,18 +86,27 @@ public class ServiceSecurityConfiguration {
                 )
 
                 .authorizeHttpRequests(auth ->
-                        AuthorizationRules.apply(auth, properties))
+                        AuthorizationRules.apply(auth, properties,
+                                service.getRequiredRoles()))
 
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler)
-                );
+                )
 
-        if (hasCallers) {
+                .addFilterBefore(
+                        new JwtAuthorizationFilter(jwtService, authenticationEntryPoint),
+                        UsernamePasswordAuthenticationFilter.class);
+
+        // Optional second mechanism, for callers that cannot obtain a token.
+        if (!service.getCallers().isEmpty()) {
+
+            log.info("API KEY CALLERS: {}", service.getCallers().stream()
+                    .map(FullSecurityProperties.Caller::getId).toList());
+
             http.addFilterBefore(
-                    new ApiKeyAuthenticationFilter(
-                            properties.getService(), authenticationEntryPoint),
-                    UsernamePasswordAuthenticationFilter.class);
+                    new ApiKeyAuthenticationFilter(service, authenticationEntryPoint),
+                    JwtAuthorizationFilter.class);
         }
 
         return http.build();

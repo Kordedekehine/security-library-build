@@ -141,9 +141,19 @@ public class FullSecurityProperties {
     @Data
     public static class Service {
 
-        /** Header carrying the shared key. */
+        /**
+         * The role this service is gated on. A caller's token must carry one
+         * of these for any endpoint that is not public or matched by a more
+         * specific rule.
+         *
+         * Empty means any verified token is accepted.
+         */
+        private List<String> requiredRoles = new ArrayList<>();
+
+        /** Header carrying the shared key, for the api-key mechanism. */
         private String header = "X-API-Key";
 
+        /** Optional: callers authenticating with a static shared key instead. */
         private List<Caller> callers = new ArrayList<>();
     }
 

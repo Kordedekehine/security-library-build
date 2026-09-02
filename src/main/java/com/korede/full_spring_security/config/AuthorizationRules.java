@@ -32,6 +32,16 @@ final class AuthorizationRules {
     static void apply(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
             FullSecurityProperties properties) {
 
+        apply(auth, properties, List.of());
+    }
+
+    /**
+     * @param fallbackRoles roles required by anything no rule matched. Empty
+     *                      means any authenticated caller is accepted.
+     */
+    static void apply(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
+            FullSecurityProperties properties, List<String> fallbackRoles) {
+
         // Validate the whole config before registering anything, so a bad
         // rule fails the context instead of half-building a filter chain.
         properties.getRules().forEach(AuthorizationRules::validate);
@@ -67,7 +77,11 @@ final class AuthorizationRules {
 
         properties.getRules().forEach(rule -> applyRule(auth, rule));
 
-        auth.anyRequest().authenticated();
+        if (fallbackRoles.isEmpty()) {
+            auth.anyRequest().authenticated();
+        } else {
+            auth.anyRequest().hasAnyRole(stripPrefix(fallbackRoles));
+        }
     }
 
     private static void applyRule(AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
