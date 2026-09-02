@@ -19,18 +19,24 @@ public class ServiceSecurityConfiguration {
 
         log.info("PUBLIC ENDPOINTS: {}", properties.getPublicEndpoints());
 
+        // SERVICE installs no authentication mechanism, so nothing can ever
+        // satisfy a rule that requires a role or a logged-in caller.
+        boolean requiresIdentity = properties.getRules().stream()
+                .anyMatch(rule -> rule.isAuthenticated() || !rule.getRoles().isEmpty())
+                || !properties.getActuator().getRoles().isEmpty();
+
+        if (requiresIdentity) {
+            log.warn("@FullSpringSecurity(type = SERVICE) has no authentication "
+                    + "mechanism, so rules requiring a role or an authenticated "
+                    + "caller can never be satisfied and will always return 403. "
+                    + "Use type = CLIENT for JWT-authenticated services, or keep "
+                    + "SERVICE rules to permit-all.");
+        }
+
         http
                 .csrf(csrf -> csrf.disable())
-                .authorizeHttpRequests(auth -> {
-
-                    properties.getPublicEndpoints()
-                            .forEach(endpoint ->
-                                    auth.requestMatchers(endpoint)
-                                            .permitAll()
-                            );
-
-                    auth.anyRequest().authenticated();
-                });
+                .authorizeHttpRequests(auth ->
+                        AuthorizationRules.apply(auth, properties));
 
         return http.build();
     }

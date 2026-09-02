@@ -101,16 +101,8 @@ public class ClientSecurityConfiguration {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
 
-                .authorizeHttpRequests(auth -> {
-
-                    properties.getPublicEndpoints()
-                            .forEach(endpoint ->
-                                    auth.requestMatchers(endpoint)
-                                            .permitAll()
-                            );
-
-                    auth.anyRequest().authenticated();
-                })
+                .authorizeHttpRequests(auth ->
+                        AuthorizationRules.apply(auth, properties))
 
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
