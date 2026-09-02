@@ -116,4 +116,55 @@ class ApiKeyAuthenticationFilterTests {
         assertTrue(e.getMessage().contains("orders-service"));
         assertTrue(e.getMessage().contains("missing a key"));
     }
+
+    @Test
+    void acceptsBothKeysDuringARotation() throws Exception {
+
+        FullSecurityProperties.Caller caller = new FullSecurityProperties.Caller();
+        caller.setId("orders-service");
+        caller.setKey("old-key");
+        caller.setKeys(List.of("new-key"));
+        caller.setRoles(List.of("SERVICE"));
+
+        FullSecurityProperties.Service service = new FullSecurityProperties.Service();
+        service.setCallers(List.of(caller));
+
+        for (String presented : List.of("old-key", "new-key")) {
+
+            SecurityContextHolder.clearContext();
+
+            MockHttpServletRequest request = new MockHttpServletRequest();
+            request.addHeader("X-API-Key", presented);
+
+            new ApiKeyAuthenticationFilter(service, entryPoint)
+                    .doFilter(request, new MockHttpServletResponse(), mock(FilterChain.class));
+
+            assertNotNull(SecurityContextHolder.getContext().getAuthentication(),
+                    "expected " + presented + " to authenticate");
+            assertEquals("orders-service",
+                    SecurityContextHolder.getContext().getAuthentication().getName());
+        }
+    }
+
+    @Test
+    void stillRejectsARetiredKeyOnceItIsRemoved() throws Exception {
+
+        FullSecurityProperties.Caller caller = new FullSecurityProperties.Caller();
+        caller.setId("orders-service");
+        caller.setKey("new-key");
+
+        FullSecurityProperties.Service service = new FullSecurityProperties.Service();
+        service.setCallers(List.of(caller));
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-API-Key", "old-key");
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        new ApiKeyAuthenticationFilter(service, entryPoint)
+                .doFilter(request, response, mock(FilterChain.class));
+
+        assertEquals(401, response.getStatus());
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+    }
 }

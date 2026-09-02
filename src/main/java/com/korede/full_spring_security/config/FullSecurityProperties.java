@@ -156,6 +156,13 @@ public class FullSecurityProperties {
         /** Shared secret. Supply from the environment, never in a committed file. */
         private String key;
 
+        /**
+         * Additional accepted secrets. During a rotation set both the old and
+         * the new key here so the caller can be redeployed independently -
+         * with a single key, both sides must cut over at the same instant.
+         */
+        private List<String> keys = new ArrayList<>();
+
         /** Roles granted to this caller. ROLE_ prefix optional. */
         private List<String> roles = new ArrayList<>();
     }

@@ -20,7 +20,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Authenticates a calling service by a shared key in a header.
@@ -109,7 +108,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
         private final String id;
 
-        private final byte[] key;
+        private final List<byte[]> keys;
 
         private final List<GrantedAuthority> authorities;
 
@@ -120,7 +119,18 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
                         "full-security.service.callers entry is missing an id.");
             }
 
-            if (caller.getKey() == null || caller.getKey().isBlank()) {
+            List<byte[]> accepted = new ArrayList<>();
+
+            if (caller.getKey() != null && !caller.getKey().isBlank()) {
+                accepted.add(caller.getKey().getBytes(StandardCharsets.UTF_8));
+            }
+
+            caller.getKeys().stream()
+                    .filter(key -> key != null && !key.isBlank())
+                    .map(key -> key.getBytes(StandardCharsets.UTF_8))
+                    .forEach(accepted::add);
+
+            if (accepted.isEmpty()) {
                 throw new IllegalStateException(
                         "full-security.service.callers entry '" + caller.getId()
                         + "' is missing a key. Supply it from the environment, "
@@ -128,7 +138,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             }
 
             this.id = caller.getId();
-            this.key = caller.getKey().getBytes(StandardCharsets.UTF_8);
+            this.keys = List.copyOf(accepted);
 
             List<GrantedAuthority> granted = new ArrayList<>();
 
@@ -142,8 +152,19 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             this.authorities = List.copyOf(granted);
         }
 
+        /** Any accepted key matches. Every key is checked, without early exit. */
         private boolean matches(byte[] presented) {
-            return MessageDigest.isEqual(this.key, presented);
+
+            boolean match = false;
+
+            for (byte[] key : keys) {
+
+                if (MessageDigest.isEqual(key, presented)) {
+                    match = true;
+                }
+            }
+
+            return match;
         }
     }
 }
