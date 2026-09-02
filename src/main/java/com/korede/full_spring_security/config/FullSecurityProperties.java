@@ -3,6 +3,7 @@ package com.korede.full_spring_security.config;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,8 +28,31 @@ public class FullSecurityProperties {
     @Data
     public static class Client {
 
-        /** Base64-encoded X.509 RSA public key used to verify incoming JWTs. */
+        /**
+         * Base64 X.509 public key used to verify incoming JWTs. RSA, EC and
+         * EdDSA are all supported; PEM armour and whitespace are tolerated.
+         * Ignored when jwks-uri is set.
+         */
         private String publicKey;
+
+        /** Optional hint: RSA, EC or EdDSA. Detected from the key when unset. */
+        private String keyAlgorithm;
+
+        /**
+         * JWKS endpoint to resolve verification keys from, selecting by the
+         * token's "kid". Takes precedence over public-key and is how key
+         * rotation is picked up without a redeploy.
+         */
+        private String jwksUri;
+
+        /** How long a fetched key set is trusted before refetching. */
+        private Duration jwksCacheTtl = Duration.ofMinutes(15);
+
+        /** Floor between refreshes triggered by an unrecognised kid. */
+        private Duration jwksRefreshCooldown = Duration.ofSeconds(30);
+
+        /** Connect timeout for the JWKS endpoint. */
+        private Duration jwksTimeout = Duration.ofSeconds(5);
 
         /** If set, tokens must carry this "iss" claim. */
         private String issuer;
